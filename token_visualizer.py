@@ -6,23 +6,27 @@ Supports multiple tokenizers and provides compression suggestions
 
 import re
 import sys
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
+
+# Suppress transformers warning about missing PyTorch/TensorFlow
+warnings.filterwarnings("ignore", message=".*PyTorch.*TensorFlow.*Flax.*have been found.*")
 
 try:
     import tiktoken
     TIKTOKEN_AVAILABLE = True
 except ImportError:
     TIKTOKEN_AVAILABLE = False
-    print("⚠️  tiktoken not installed. Install with: pip install tiktoken")
+    print("⚠️  tiktoken not installed. Install with: uv add tiktoken")
 
 try:
     from transformers import AutoTokenizer
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
-    print("⚠️  transformers not installed. Install with: pip install transformers")
+    print("⚠️  transformers not installed. Install with: uv add transformers")
 
 # ANSI color codes for terminal formatting
 class Colors:
@@ -66,11 +70,32 @@ class TokenVisualizer:
             except KeyError:
                 return tiktoken.get_encoding("cl100k_base")  # fallback
         elif TRANSFORMERS_AVAILABLE:
-            try:
-                return AutoTokenizer.from_pretrained(self.model_name)
-            except:
-                print(f"⚠️  Could not load {self.model_name}, using basic word splitting")
-                return None
+            # Map model names to actual Hugging Face model identifiers
+            model_mapping = {
+                "llama-2-7b": "meta-llama/Llama-2-7b-hf",
+                "llama-2-13b": "meta-llama/Llama-2-13b-hf", 
+                "llama-3-8b": "meta-llama/Meta-Llama-3-8B-Instruct",
+                "llama-3-70b": "meta-llama/Meta-Llama-3-70B-Instruct",
+                "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.1",
+                "mixtral-8x7b": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+            }
+            
+            hf_model = model_mapping.get(self.model_name.lower())
+            if hf_model:
+                try:
+                    return AutoTokenizer.from_pretrained(hf_model)
+                except Exception as e:
+                    print(f"ℹ️  {self.model_name} tokenizer unavailable, using GPT-4 tokenizer as approximation")
+                    if TIKTOKEN_AVAILABLE:
+                        return tiktoken.get_encoding("cl100k_base")
+                    else:
+                        return None
+            else:
+                # For models without HF tokenizers, use GPT tokenizer as approximation
+                if TIKTOKEN_AVAILABLE:
+                    return tiktoken.get_encoding("cl100k_base")
+                else:
+                    return None
         else:
             print("⚠️  No tokenizer available, using basic word splitting")
             return None
@@ -278,20 +303,32 @@ def main():
     if not text.strip():
         print("❌ No text provided")
         return
+
+    # Choose model - only include models that work reliably
+    model_options = [
+        "gpt-4", 
+        "gpt-3.5-turbo", 
+        "claude-3-sonnet",  # Will use GPT tokenizer as approximation
+        "llama-2-7b"       # Will use GPT tokenizer as approximation  
+    ]
     
-    # Choose model
-    model_options = ["gpt-4", "gpt-3.5-turbo", "claude-3-sonnet", "llama-2-7b"]
-    print(f"\n{Colors.CYAN}Select tokenizer:{Colors.END}")
-    for i, model in enumerate(model_options, 1):
-        print(f"  {i}. {model}")
-    
-    try:
-        choice = input(f"Choice (1-{len(model_options)}, default=1): ").strip()
-        if not choice:
-            choice = "1"
-        model_name = model_options[int(choice) - 1]
-    except (ValueError, IndexError):
+    # Auto-select default for non-interactive mode or if stdin is not a tty
+    if sys.stdin.isatty() and len(sys.argv) == 1:
+        print(f"\n{Colors.CYAN}Select tokenizer:{Colors.END}")
+        for i, model in enumerate(model_options, 1):
+            print(f"  {i}. {model}")
+        
+        try:
+            choice = input(f"Choice (1-{len(model_options)}, default=1): ").strip()
+            if not choice:
+                choice = "1"
+            model_name = model_options[int(choice) - 1]
+        except (ValueError, IndexError):
+            model_name = "gpt-4"
+    else:
+        # Non-interactive mode - use default
         model_name = "gpt-4"
+        print(f"\n{Colors.CYAN}Using tokenizer: {Colors.BOLD}{model_name}{Colors.END} (non-interactive mode)")
     
     # Analyze
     visualizer = TokenVisualizer(model_name)
@@ -304,3 +341,4 @@ if __name__ == "__main__":
         Colors.disable()
     
     main()
+
